@@ -32,6 +32,14 @@ bun --version
 
 If `bun` is not installed, the plugin will fail to start. See [bun.sh](https://bun.sh) for alternative install methods (Homebrew, npm, Docker, etc).
 
+### Claude Code
+
+Version **2.1.80** or later is required (channels support). Check with:
+
+```bash
+claude --version
+```
+
 ### Slack App
 
 You need a Slack app with Socket Mode enabled. Follow the steps below to create one.
@@ -63,17 +71,23 @@ Go to **OAuth & Permissions > Bot Token Scopes** and add:
 
 ### 3. Subscribe to Events
 
-Go to **Event Subscriptions** (these use Socket Mode, no public URL needed):
+Go to **Event Subscriptions** and enable it. Under **Subscribe to bot events**, add all of the following:
 
 | Event | Purpose |
 |-------|---------|
-| `message.im` | Receive DMs |
+| `message.channels` | Receive messages in public channels |
+| `message.groups` | Receive messages in private channels |
+| `message.im` | Receive direct messages |
+| `message.mpim` | Receive group direct messages |
 | `app_mention` | Receive @mentions in channels |
-| `message.channels` | Receive messages in public channels (optional) |
+
+> **All five events are required.** Socket Mode connects successfully without them, but Slack will never send message events over the WebSocket — the bot will appear online but silently ignore all messages.
 
 ### 4. Install the App to Your Workspace
 
 Click **Install App** in the sidebar. After installing, copy the **Bot User OAuth Token** (`xoxb-`).
+
+> If you change scopes or event subscriptions after installing, you must **reinstall the app** for changes to take effect.
 
 You now have two tokens:
 - `xoxb-...` — Bot User OAuth Token (from Install App page)
@@ -98,11 +112,13 @@ Then add to your MCP settings (e.g. `~/.claude/settings.json` or project `.mcp.j
   "mcpServers": {
     "slack": {
       "command": "bun",
-      "args": ["run", "--cwd", "/path/to/claude-code-slack", "--shell=bun", "--silent", "start"]
+      "args": ["run", "--cwd", "/path/to/claude-code-slack", "--silent", "start"]
     }
   }
 }
 ```
+
+> **Note:** Do not use a `cwd` field in the MCP config — Claude Code ignores it. Use bun's `--cwd` flag in the args array instead.
 
 ### 6. Configure Tokens
 
@@ -114,9 +130,23 @@ Run in Claude Code:
 
 Paste your tokens when prompted. They are saved to `~/.claude/channels/slack/.env` (chmod 600, owner-only).
 
-Restart Claude Code for the connection to activate.
+### 7. Launch Claude Code with the Channel
 
-### 7. Pair Your Slack Account
+This is a development channel plugin, so it requires the `--dangerously-load-development-channels` flag:
+
+```bash
+claude --dangerously-load-development-channels server:slack
+```
+
+You should see:
+
+```
+Listening for channel messages from: server:slack
+```
+
+> `server:slack` refers to the MCP server key in `.mcp.json`. Do not also pass `--channels` — that flag is for official plugins only and will cause duplicate registration warnings.
+
+### 8. Pair Your Slack Account
 
 DM the bot in Slack. It will reply with a pairing code:
 
@@ -126,6 +156,20 @@ Pairing required — run in Claude Code:
 ```
 
 Run that command in your terminal to approve the pairing.
+
+### 9. Invite the Bot to Channels
+
+For the bot to receive messages in a channel, it must be a member:
+
+1. Open the Slack channel
+2. Type `/invite @YourBotName` or mention the bot
+3. Enable the channel in access control:
+
+```
+/slack:access group add C0123456789
+```
+
+To find a channel's ID, right-click the channel name in Slack > **View channel details** > scroll to the bottom.
 
 ## Access Control
 
@@ -149,6 +193,13 @@ The plugin uses a layered access control model:
 /slack:access group rm C0123456789     # Disable a channel
 /slack:access set ackReaction eyes     # React to messages on receipt
 ```
+
+### Channel options
+
+When adding a group, you can configure per-channel behavior:
+
+- `requireMention` (default: `true`) — only respond when @mentioned. Set to `false` to respond to all messages.
+- `allowFrom` — restrict which user IDs can trigger the bot in that channel.
 
 ## Tools Available to Claude
 
@@ -189,9 +240,11 @@ State lives in `~/.claude/channels/slack/`:
 |---------|-----|
 | `bun: command not found` | Install Bun: `curl -fsSL https://bun.sh/install \| bash` |
 | `SLACK_BOT_TOKEN and SLACK_APP_TOKEN required` | Run `/slack:configure` and paste both tokens |
-| Plugin starts but no messages arrive | Check Event Subscriptions are enabled in your Slack app settings |
-| Bot doesn't respond in a channel | Add the channel with `/slack:access group add <channelId>` |
+| Bot connects but no messages arrive | Verify all 5 event subscriptions are added (step 3) and the app was reinstalled after adding them |
+| Bot doesn't respond in a channel | 1) Invite the bot to the channel 2) Add with `/slack:access group add <channelId>` |
+| "Listening for channel messages" but nothing happens | Check `--dangerously-load-development-channels server:slack` flag is set |
 | Pairing code expired | DM the bot again to get a fresh code (codes expire after 1 hour) |
+| MCP server crashes silently | Do not use `cwd` in `.mcp.json` — use bun's `--cwd` flag in args instead |
 
 ## License
 

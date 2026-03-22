@@ -1,3 +1,13 @@
+---
+name: configure
+description: Set up Slack channel tokens and check channel status. Use when the user provides Slack bot tokens or asks about channel configuration.
+user-invocable: true
+allowed-tools:
+  - Read
+  - Write
+  - Bash(chmod *)
+---
+
 # /slack:configure — Slack Channel Setup
 
 Use this skill when the user pastes Slack bot tokens, asks to configure the

@@ -1,3 +1,14 @@
+---
+name: access
+description: Manage Slack channel access — approve pairings, edit allowlists, set DM/group policy. Use when the user asks to pair, approve someone, check who's allowed, or change policy for the Slack channel.
+user-invocable: true
+allowed-tools:
+  - Read
+  - Write
+  - Bash(ls *)
+  - Bash(mkdir *)
+---
+
 # /slack:access — Slack Channel Access Management
 
 **This skill only acts on requests typed by the user in their terminal

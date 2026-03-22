@@ -15,7 +15,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { App } from '@slack/bolt'
+import { App, LogLevel } from '@slack/bolt'
 import type { GenericMessageEvent } from '@slack/types'
 import { randomBytes } from 'crypto'
 import {
@@ -74,12 +74,25 @@ process.on('uncaughtException', (err) => {
 
 // ── Slack Bolt App (Socket Mode) ────────────────────────────────────────
 
+// Bolt's built-in logger writes to console.log (stdout). MCP uses stdout for
+// JSON-RPC transport — any stray output corrupts the protocol. Redirect every
+// log call to stderr so the transport stays clean.
+const stderrLogger = {
+  debug(...msgs: unknown[]) { process.stderr.write(`[slack:debug] ${msgs.join(' ')}\n`) },
+  info(...msgs: unknown[]) { process.stderr.write(`[slack:info] ${msgs.join(' ')}\n`) },
+  warn(...msgs: unknown[]) { process.stderr.write(`[slack:warn] ${msgs.join(' ')}\n`) },
+  error(...msgs: unknown[]) { process.stderr.write(`[slack:error] ${msgs.join(' ')}\n`) },
+  setLevel(_level: LogLevel) {},
+  getLevel() { return LogLevel.DEBUG },
+  setName(_name: string) {},
+}
+
 const app = new App({
   token: BOT_TOKEN,
   appToken: APP_TOKEN,
   socketMode: true,
-  // Disable built-in logging to avoid noise on stdout (MCP transport)
-  logLevel: undefined,
+  logLevel: LogLevel.DEBUG,
+  logger: stderrLogger,
 })
 
 let botUserId = ''
@@ -767,16 +780,34 @@ async function handleMessage(event: GenericMessageEvent): Promise<void> {
     })
 }
 
+// Track message timestamps we already processed to deduplicate.
+// Slack fires both `message` and `app_mention` for @mentions in channels —
+// without dedup the same message would be delivered to Claude twice.
+const processedTs = new Set<string>()
+const PROCESSED_TS_CAP = 500
+
+function markProcessed(ts: string): boolean {
+  if (processedTs.has(ts)) return false
+  processedTs.add(ts)
+  if (processedTs.size > PROCESSED_TS_CAP) {
+    const first = processedTs.values().next().value
+    if (first) processedTs.delete(first)
+  }
+  return true
+}
+
 // Listen for all message events (DMs + channels the bot is in)
 app.message(async ({ event }) => {
-  handleMessage(event as GenericMessageEvent).catch((e) =>
+  const ev = event as GenericMessageEvent
+  if (!ev.ts || !markProcessed(ev.ts)) return
+  handleMessage(ev).catch((e) =>
     process.stderr.write(`slack: handleMessage failed: ${e}\n`),
   )
 })
 
 // Listen for @mentions in channels
 app.event('app_mention', async ({ event }) => {
-  // app_mention provides the same shape; cast and reuse
+  if (!event.ts || !markProcessed(event.ts)) return
   handleMessage(event as unknown as GenericMessageEvent).catch((e) =>
     process.stderr.write(`slack: handleMessage (mention) failed: ${e}\n`),
   )
@@ -785,7 +816,12 @@ app.event('app_mention', async ({ event }) => {
 // ── Start ───────────────────────────────────────────────────────────────
 
 void (async () => {
-  await app.start()
+  try {
+    await app.start()
+  } catch (err) {
+    process.stderr.write(`slack channel: app.start() failed: ${err}\n`)
+    process.exit(1)
+  }
   // Resolve our own bot user ID for mention detection
   try {
     const auth = await app.client.auth.test()
@@ -796,4 +832,5 @@ void (async () => {
   } catch (err) {
     process.stderr.write(`slack channel: auth.test failed: ${err}\n`)
   }
+
 })()
