@@ -236,26 +236,19 @@ When Claude Code runs on EC2 (headless, no terminal), it needs human approval fo
 
 ### Setting up in your workspace
 
-Add this rule to `.claude/rules/slack-approval.md`:
+The plugin ships with ready-made templates. Copy them to your project:
 
-```markdown
-# Slack Approval for Destructive Actions
-
-When operating via Slack, you MUST request human approval before:
-- git commit / git push
-- Deploy triggers
-- File deletion
-- Database modifications
-
-Protocol:
-1. Post summary to Slack with changes list
-2. End with: "Reply `approved` to proceed or `denied` to abort."
-3. Poll thread with fetch_thread for user response
-4. Only execute if user explicitly approves
-5. Timeout after 5 minutes → abort
+```bash
+# From your project root:
+cp -r /path/to/claude-code-slack/templates/rules/ .claude/rules/
+cp -r /path/to/claude-code-slack/templates/commands/ .claude/commands/
 ```
 
-A ready-made skill is available at `.claude/commands/request-approval.md` — use `/request-approval <action description>` to invoke the full protocol.
+This installs:
+- `.claude/rules/slack-approval.md` — enforces the approval protocol automatically
+- `.claude/commands/request-approval.md` — `/request-approval` skill for the full approval flow
+
+Use `/request-approval <action description>` to invoke the protocol.
 
 ### Keywords
 
