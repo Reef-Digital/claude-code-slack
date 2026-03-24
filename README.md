@@ -211,7 +211,70 @@ Once connected, Claude Code gains these Slack tools:
 | `react` | Add an emoji reaction |
 | `edit_message` | Edit a previously sent message |
 | `fetch_messages` | Fetch recent channel history |
+| `fetch_thread` | Fetch replies in a thread |
 | `download_attachment` | Download files from a message |
+
+## Approval Flow for Destructive Actions
+
+When Claude Code runs on EC2 (headless, no terminal), it needs human approval for destructive actions like `git commit`, `git push`, deploy, etc. The plugin's tools enable a Slack-based approval protocol:
+
+### How it works
+
+1. **Claude posts a summary** to Slack using `reply`:
+   ```
+   Ready to commit and push reef-agents v1.2.16:
+   - admin.service.ts — shop name in search traces
+   - package.json — version bump
+   Reply `approved` to proceed or `denied` to abort.
+   ```
+
+2. **Claude polls for response** using `fetch_thread` on the message it posted
+
+3. **User replies** in the thread: `approved` or `denied`
+
+4. **Claude reads the reply** and acts accordingly
+
+### Setting up in your workspace
+
+Add this rule to `.claude/rules/slack-approval.md`:
+
+```markdown
+# Slack Approval for Destructive Actions
+
+When operating via Slack, you MUST request human approval before:
+- git commit / git push
+- Deploy triggers
+- File deletion
+- Database modifications
+
+Protocol:
+1. Post summary to Slack with changes list
+2. End with: "Reply `approved` to proceed or `denied` to abort."
+3. Poll thread with fetch_thread for user response
+4. Only execute if user explicitly approves
+5. Timeout after 5 minutes → abort
+```
+
+A ready-made skill is available at `.claude/commands/request-approval.md` — use `/request-approval <action description>` to invoke the full protocol.
+
+### Keywords
+
+| User reply | Action |
+|------------|--------|
+| `approved`, `yes`, `go`, `proceed` | Execute the action |
+| `denied`, `no`, `stop`, `abort` | Cancel the action |
+
+### Example conversation
+
+```
+🤖 Bot: Ready to push reef-agents v1.2.16 to release/1.2.
+         Changes: admin.service.ts (shop name in traces)
+         Reply `approved` to proceed or `denied` to abort. ⏳
+
+👤 User: approved
+
+🤖 Bot: ✅ Pushed: 9e15b61 → release/1.2
+```
 
 ## File Layout
 
