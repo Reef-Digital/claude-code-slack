@@ -860,6 +860,61 @@ function markProcessed(ts: string): boolean {
   return true
 }
 
+// ── Permission Relay (interactive buttons) ────────────────────────────
+// The permission-relay hook posts messages with approve/deny buttons.
+// When clicked, the action handler writes the decision to a temp file
+// that the hook script polls.
+
+const PERMISSION_DIR = join(STATE_DIR, 'permissions')
+try { mkdirSync(PERMISSION_DIR, { recursive: true }) } catch {}
+
+app.action('permission_approve', async ({ ack, body, client }) => {
+  await ack()
+  const action = (body as any).actions?.[0]
+  const requestId = action?.value || ''
+  if (requestId) {
+    writeFileSync(join(PERMISSION_DIR, requestId), 'allow')
+  }
+  // Update the message to show approved
+  try {
+    const msg = (body as any).message
+    await client.chat.update({
+      channel: (body as any).channel?.id || '',
+      ts: msg?.ts || '',
+      text: `✅ *Approved* by <@${(body as any).user?.id}>`,
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: (msg?.blocks?.[0]?.text?.text || '') + `\n\n✅ *Approved* by <@${(body as any).user?.id}>` },
+        },
+      ],
+    })
+  } catch {}
+})
+
+app.action('permission_deny', async ({ ack, body, client }) => {
+  await ack()
+  const action = (body as any).actions?.[0]
+  const requestId = action?.value || ''
+  if (requestId) {
+    writeFileSync(join(PERMISSION_DIR, requestId), 'deny')
+  }
+  try {
+    const msg = (body as any).message
+    await client.chat.update({
+      channel: (body as any).channel?.id || '',
+      ts: msg?.ts || '',
+      text: `❌ *Denied* by <@${(body as any).user?.id}>`,
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: (msg?.blocks?.[0]?.text?.text || '') + `\n\n❌ *Denied* by <@${(body as any).user?.id}>` },
+        },
+      ],
+    })
+  } catch {}
+})
+
 // Listen for all message events (DMs + channels the bot is in)
 app.message(async ({ event }) => {
   const ev = event as GenericMessageEvent
