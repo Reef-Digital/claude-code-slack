@@ -20,6 +20,15 @@ TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
 DESCRIPTION=$(echo "$INPUT" | jq -r '.tool_input.description // empty')
 AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // empty')
 
+# Track active thread_ts from Slack replies so permission-relay can post in-thread
+THREAD_TS_FILE="${HOME}/.claude/channels/slack/active-thread-ts"
+if [ "$TOOL_NAME" = "mcp__slack__reply" ]; then
+  REPLY_TO=$(echo "$INPUT" | jq -r '.tool_input.reply_to // empty')
+  if [ -n "$REPLY_TO" ]; then
+    echo "$REPLY_TO" > "$THREAD_TS_FILE"
+  fi
+fi
+
 # Skip noisy read-only tools
 case "$TOOL_NAME" in
   Read|Glob|Grep|WebSearch|WebFetch|ToolSearch) exit 0 ;;

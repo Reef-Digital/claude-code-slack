@@ -14,6 +14,7 @@ set -euo pipefail
 SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
 SLACK_CHANNEL_ID="${SLACK_CHANNEL_ID:-}"
 PERMISSION_DIR="${HOME}/.claude/channels/slack/permissions"
+THREAD_TS_FILE="${HOME}/.claude/channels/slack/active-thread-ts"
 POLL_INTERVAL=3
 TIMEOUT=300
 
@@ -27,43 +28,70 @@ mkdir -p "$PERMISSION_DIR"
 # Read hook input from stdin
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // "unknown"')
-TOOL_INPUT=$(echo "$INPUT" | jq -r '.tool_input | if type == "object" then (.command // (.file_path // (. | tostring | .[0:300]))) else (. | tostring | .[0:300]) end')
+RAW_CMD=$(echo "$INPUT" | jq -r '.tool_input | if type == "object" then (.command // (.file_path // (. | tostring | .[0:500]))) else (. | tostring | .[0:500]) end')
 
-# Gather git context for richer messages
-GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
-GIT_REPO=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "unknown")
-GIT_STATUS=$(git diff --stat --cached 2>/dev/null || git diff --stat 2>/dev/null || echo "")
-GIT_STATUS="${GIT_STATUS:0:500}"
+# Extract the first meaningful command (before && or heredoc)
+# For multi-line commands like "git add ... && git commit ..." show each git command on its own line
+CLEAN_CMD=$(echo "$RAW_CMD" | sed 's/ *&& */\n/g' | grep -E '^(git |npm |npx |curl |rm |cp |mv |docker |deploy)' | head -5)
+if [[ -z "$CLEAN_CMD" ]]; then
+  # Fallback: first line, truncated
+  CLEAN_CMD=$(echo "$RAW_CMD" | head -1 | cut -c1-200)
+fi
 
-# Build context string
-CONTEXT=""
-if [[ "$TOOL_INPUT" == git* ]]; then
-  CONTEXT="*Repo:* \`${GIT_REPO}\` • *Branch:* \`${GIT_BRANCH}\`"
-  if [[ -n "$GIT_STATUS" ]]; then
-    CONTEXT="${CONTEXT}\n*Changes:*\n\`\`\`${GIT_STATUS}\`\`\`"
+# For git commit, extract the message summary
+COMMIT_MSG=""
+if echo "$RAW_CMD" | grep -q "git commit"; then
+  COMMIT_MSG=$(echo "$RAW_CMD" | sed -n 's/.*-m ["\x27]\{0,1\}\([^"\x27]*\).*/\1/p' | head -1 | cut -c1-200 2>/dev/null || echo "")
+  if [[ -z "$COMMIT_MSG" ]]; then
+    COMMIT_MSG=$(echo "$RAW_CMD" | sed -n 's/.*-m \([^ ]*\).*/\1/p' | head -1 | cut -c1-200 2>/dev/null || echo "")
   fi
 fi
+
+# Gather git context
+GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "—")
+GIT_REPO=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "—")
+GIT_STAGED=$(git diff --cached --stat 2>/dev/null | tail -1 || echo "")
+GIT_STAGED="${GIT_STAGED:0:200}"
 
 # Generate unique request ID
 REQUEST_ID="perm-$(date +%s)-$$"
 
-# Post Block Kit message with buttons
-DESC="🔐 *Permission Request*\n\nTool: \`${TOOL_NAME}\`\n\`\`\`${TOOL_INPUT}\`\`\`"
-if [[ -n "$CONTEXT" ]]; then
-  DESC="${DESC}\n\n${CONTEXT}"
-fi
-
+# Build Block Kit blocks as separate sections for clean layout
 BLOCKS=$(jq -n \
-  --arg desc "$DESC" \
+  --arg repo "$GIT_REPO" \
+  --arg branch "$GIT_BRANCH" \
+  --arg cmds "$CLEAN_CMD" \
+  --arg commit "$COMMIT_MSG" \
+  --arg staged "$GIT_STAGED" \
   --arg rid "$REQUEST_ID" \
-  '[
+  '
+  [
+    {
+      "type": "header",
+      "text": { "type": "plain_text", "text": "🔐 Permission Request" }
+    },
     {
       "type": "section",
-      "text": {
-        "type": "mrkdwn",
-        "text": $desc
-      }
+      "fields": [
+        { "type": "mrkdwn", "text": ("*Repo:*\n`" + $repo + "`") },
+        { "type": "mrkdwn", "text": ("*Branch:*\n`" + $branch + "`") }
+      ]
     },
+    {
+      "type": "section",
+      "text": { "type": "mrkdwn", "text": ("*Commands:*\n```" + $cmds + "```") }
+    }
+  ]
+  + (if $commit != "" then [{
+      "type": "context",
+      "elements": [{ "type": "mrkdwn", "text": ("💬 " + $commit) }]
+    }] else [] end)
+  + (if $staged != "" then [{
+      "type": "context",
+      "elements": [{ "type": "mrkdwn", "text": ("📁 " + $staged) }]
+    }] else [] end)
+  + [
+    { "type": "divider" },
     {
       "type": "actions",
       "elements": [
@@ -83,7 +111,14 @@ BLOCKS=$(jq -n \
         }
       ]
     }
-  ]')
+  ]
+  ')
+
+# Read active thread_ts so approval appears in the correct thread
+THREAD_TS=""
+if [[ -f "$THREAD_TS_FILE" ]]; then
+  THREAD_TS=$(cat "$THREAD_TS_FILE" 2>/dev/null || echo "")
+fi
 
 RESPONSE=$(curl -s -X POST "https://slack.com/api/chat.postMessage" \
   -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
@@ -91,8 +126,9 @@ RESPONSE=$(curl -s -X POST "https://slack.com/api/chat.postMessage" \
   -d "$(jq -n \
     --arg channel "$SLACK_CHANNEL_ID" \
     --arg text "🔐 Permission Request: ${TOOL_NAME}" \
+    --arg thread_ts "$THREAD_TS" \
     --argjson blocks "$BLOCKS" \
-    '{channel: $channel, text: $text, blocks: $blocks}')")
+    'if $thread_ts != "" then {channel: $channel, text: $text, blocks: $blocks, thread_ts: $thread_ts} else {channel: $channel, text: $text, blocks: $blocks} end')")
 
 OK=$(echo "$RESPONSE" | jq -r '.ok // "false"')
 if [[ "$OK" != "true" ]]; then
@@ -135,10 +171,29 @@ fi
 
 rm -f "$DECISION_FILE" 2>/dev/null
 
-jq -n --arg decision "$PERM" --arg reason "Slack interactive: $DECISION" '{
+# Post acknowledgment back to the thread so user knows the CLI received the decision
+MSG_TS=$(echo "$RESPONSE" | jq -r '.ts // empty')
+if [[ -n "$MSG_TS" ]]; then
+  if [[ "$PERM" == "allow" ]]; then
+    ACK_TEXT="✅ CLI received approval — executing."
+  elif [[ "$PERM" == "deny" ]]; then
+    ACK_TEXT="❌ CLI received denial — command blocked."
+  else
+    ACK_TEXT="⏰ No response received — command blocked (timeout)."
+  fi
+  ACK_THREAD="${THREAD_TS:-$MSG_TS}"
+  curl -s -X POST "https://slack.com/api/chat.postMessage" \
+    -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg channel "$SLACK_CHANNEL_ID" --arg text "$ACK_TEXT" --arg thread_ts "$ACK_THREAD" \
+      '{channel: $channel, text: $text, thread_ts: $thread_ts}')" > /dev/null
+fi
+
+jq -n --arg behavior "$PERM" '{
   hookSpecificOutput: {
     hookEventName: "PermissionRequest",
-    permissionDecision: $decision,
-    permissionDecisionReason: $reason
+    decision: {
+      behavior: $behavior
+    }
   }
 }'
