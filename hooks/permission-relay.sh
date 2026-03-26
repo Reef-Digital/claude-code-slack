@@ -14,6 +14,7 @@ set -euo pipefail
 SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
 SLACK_CHANNEL_ID="${SLACK_CHANNEL_ID:-}"
 PERMISSION_DIR="${HOME}/.claude/channels/slack/permissions"
+THREAD_MAP_DIR="${HOME}/.claude/channels/slack/thread-map"
 THREAD_TS_FILE="${HOME}/.claude/channels/slack/active-thread-ts"
 POLL_INTERVAL=3
 TIMEOUT=300
@@ -47,51 +48,19 @@ if echo "$RAW_CMD" | grep -q "git commit"; then
   fi
 fi
 
-# Gather git context
-GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "—")
-GIT_REPO=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "—")
-GIT_STAGED=$(git diff --cached --stat 2>/dev/null | tail -1 || echo "")
-GIT_STAGED="${GIT_STAGED:0:200}"
-
 # Generate unique request ID
 REQUEST_ID="perm-$(date +%s)-$$"
 
-# Build Block Kit blocks as separate sections for clean layout
+# Build clean approval message — just the command + buttons
 BLOCKS=$(jq -n \
-  --arg repo "$GIT_REPO" \
-  --arg branch "$GIT_BRANCH" \
   --arg cmds "$CLEAN_CMD" \
-  --arg commit "$COMMIT_MSG" \
-  --arg staged "$GIT_STAGED" \
   --arg rid "$REQUEST_ID" \
   '
   [
     {
-      "type": "header",
-      "text": { "type": "plain_text", "text": "🔐 Permission Request" }
-    },
-    {
       "type": "section",
-      "fields": [
-        { "type": "mrkdwn", "text": ("*Repo:*\n`" + $repo + "`") },
-        { "type": "mrkdwn", "text": ("*Branch:*\n`" + $branch + "`") }
-      ]
+      "text": { "type": "mrkdwn", "text": ("```" + $cmds + "```") }
     },
-    {
-      "type": "section",
-      "text": { "type": "mrkdwn", "text": ("*Commands:*\n```" + $cmds + "```") }
-    }
-  ]
-  + (if $commit != "" then [{
-      "type": "context",
-      "elements": [{ "type": "mrkdwn", "text": ("💬 " + $commit) }]
-    }] else [] end)
-  + (if $staged != "" then [{
-      "type": "context",
-      "elements": [{ "type": "mrkdwn", "text": ("📁 " + $staged) }]
-    }] else [] end)
-  + [
-    { "type": "divider" },
     {
       "type": "actions",
       "elements": [
@@ -114,9 +83,13 @@ BLOCKS=$(jq -n \
   ]
   ')
 
-# Read active thread_ts so approval appears in the correct thread
+# Read active thread_ts — check per-session map first, fallback to global
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 THREAD_TS=""
-if [[ -f "$THREAD_TS_FILE" ]]; then
+if [[ -n "$SESSION_ID" && -f "$THREAD_MAP_DIR/$SESSION_ID" ]]; then
+  THREAD_TS=$(cat "$THREAD_MAP_DIR/$SESSION_ID" 2>/dev/null || echo "")
+fi
+if [[ -z "$THREAD_TS" && -f "$THREAD_TS_FILE" ]]; then
   THREAD_TS=$(cat "$THREAD_TS_FILE" 2>/dev/null || echo "")
 fi
 

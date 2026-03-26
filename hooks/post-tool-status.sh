@@ -21,11 +21,20 @@ DESCRIPTION=$(echo "$INPUT" | jq -r '.tool_input.description // empty')
 AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // empty')
 
 # Track active thread_ts from Slack replies so permission-relay can post in-thread
+# Uses a thread map directory keyed by session_id for multi-agent support
+THREAD_MAP_DIR="${HOME}/.claude/channels/slack/thread-map"
 THREAD_TS_FILE="${HOME}/.claude/channels/slack/active-thread-ts"
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 if [ "$TOOL_NAME" = "mcp__slack__reply" ]; then
   REPLY_TO=$(echo "$INPUT" | jq -r '.tool_input.reply_to // empty')
   if [ -n "$REPLY_TO" ]; then
+    # Always update global fallback
     echo "$REPLY_TO" > "$THREAD_TS_FILE"
+    # Also write per-session mapping
+    if [ -n "$SESSION_ID" ]; then
+      mkdir -p "$THREAD_MAP_DIR"
+      echo "$REPLY_TO" > "$THREAD_MAP_DIR/$SESSION_ID"
+    fi
   fi
 fi
 
