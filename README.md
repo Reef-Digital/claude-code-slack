@@ -201,6 +201,40 @@ When adding a group, you can configure per-channel behavior:
 - `requireMention` (default: `true`) — only respond when @mentioned. Set to `false` to respond to all messages.
 - `allowFrom` — restrict which user IDs can trigger the bot in that channel.
 
+## Architecture
+
+### Message Delivery
+
+The plugin uses Claude Code's native **MCP channel notification protocol** to deliver Slack messages. No tmux, file watching, or stdin piping is involved.
+
+```
+Slack (Socket Mode WebSocket)
+  ↓
+Bolt SDK (event listener)
+  ↓
+server.ts — formats message, downloads attachments
+  ↓
+mcp.notification({
+  method: 'notifications/claude/channel',
+  params: { content, meta: { chat_id, message_id, user, ts } }
+})
+  ↓
+Claude Code — injects as <channel> tag in conversation
+```
+
+**Inbound** (Slack → Claude): Slack messages arrive via Bolt Socket Mode. The server formats them with metadata (channel ID, user, timestamp, attachments) and delivers via `notifications/claude/channel`. Claude Code renders these as `<channel source="slack" ...>` blocks in the conversation.
+
+**Outbound** (Claude → Slack): Claude calls MCP tools (`reply`, `react`, `edit_message`, etc.) which the server executes via the Slack Web API.
+
+**Attachments**: Images and files attached to Slack messages are auto-downloaded to `~/.claude/channels/slack/inbox/` and their local paths are included in the notification. Claude can read these files directly.
+
+### Key Design Decisions
+
+- **MCP over tmux/stdin**: The `notifications/claude/channel` protocol is a first-class Claude Code feature. It handles message queuing, deduplication, and context injection natively.
+- **Socket Mode over HTTP**: No public URL or ngrok needed. The WebSocket connection is outbound-only, works behind firewalls and on EC2.
+- **Deduplication**: Slack fires both `message` and `app_mention` events for @mentions. The server tracks processed timestamps to prevent duplicate delivery.
+- **Access control**: All access decisions happen in the plugin before messages reach Claude. Unauthorized messages are silently dropped.
+
 ## Tools Available to Claude
 
 Once connected, Claude Code gains these Slack tools:
