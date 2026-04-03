@@ -65,6 +65,10 @@ if (!BOT_TOKEN || !APP_TOKEN) {
 
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 
+// Track the last inbound message ts per channel for auto-threading.
+// When Claude replies without reply_to, default to the last message received.
+const lastInboundTs = new Map<string, string>()
+
 process.on('unhandledRejection', (err) => {
   process.stderr.write(`slack channel: unhandled rejection: ${err}\n`)
 })
@@ -534,7 +538,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'reply': {
         const chat_id = args.chat_id as string
         const text = args.text as string
-        const reply_to = args.reply_to as string | undefined
+        // Auto-thread: if reply_to not provided, default to last inbound message in this channel
+        const reply_to = (args.reply_to as string | undefined) ?? lastInboundTs.get(chat_id)
         const files = (args.files as string[] | undefined) ?? []
 
         for (const f of files) {
@@ -815,6 +820,9 @@ async function handleMessage(event: GenericMessageEvent): Promise<void> {
   if (downloadedPaths.length > 0) {
     content += `\n[Auto-downloaded ${downloadedPaths.length} file(s): ${downloadedPaths.join(', ')}]`
   }
+
+  // Track last inbound ts for auto-threading
+  lastInboundTs.set(channelId, event.ts)
 
   mcp
     .notification({
