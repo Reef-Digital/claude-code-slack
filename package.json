@@ -1,6 +1,6 @@
 {
   "name": "claude-code-slack",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Slack channel plugin for Claude Code — interact with Claude Code agents via Slack",
   "license": "Apache-2.0",
   "type": "module",

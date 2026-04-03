@@ -287,7 +287,9 @@ function gate(
   if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
     return { action: 'drop' }
   }
-  if (requireMention && !isMentioned(text, access.mentionPatterns)) {
+  // In threads, don't require a fresh @mention — the user is continuing a conversation.
+  // Only require @mention for top-level channel messages.
+  if (requireMention && !threadTs && !isMentioned(text, access.mentionPatterns)) {
     return { action: 'drop' }
   }
   return { action: 'deliver', access }
