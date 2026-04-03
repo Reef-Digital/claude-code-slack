@@ -18,9 +18,11 @@ import {
 import { App, LogLevel } from '@slack/bolt'
 import type { GenericMessageEvent } from '@slack/types'
 import { randomBytes } from 'crypto'
+import { execSync } from 'child_process'
 import {
   readFileSync,
   writeFileSync,
+  unlinkSync,
   mkdirSync,
   readdirSync,
   rmSync,
@@ -849,9 +851,30 @@ async function handleMessage(event: GenericMessageEvent): Promise<void> {
     })
     .catch((err) => {
       process.stderr.write(
-        `slack channel: failed to deliver inbound to Claude: ${err}\n`,
+        `slack channel: MCP notification failed (non-fatal): ${err}\n`,
       )
     })
+
+  // tmux fallback: when CLAUDE_TMUX_WINDOW is set, inject the message via
+  // tmux paste-buffer. This is the only delivery path on headless EC2 where
+  // channels require claude.ai OAuth which can't authenticate without a browser.
+  const tmuxWindow = process.env.CLAUDE_TMUX_WINDOW
+  if (tmuxWindow) {
+    const attMeta = atts.length > 0
+      ? ` attachment_count="${atts.length}" attachments="${atts.join('; ')}" downloaded_paths="${downloadedPaths.join('; ')}"`
+      : ''
+    const prompt = `<channel source="slack" chat_id="${channelId}" message_id="${event.ts}" user="${senderId}" user_id="${senderId}" ts="${new Date(Number(event.ts) * 1000).toISOString()}"${attMeta}>\n${content}\n</channel>`
+    const tmpFile = `/tmp/claude-slack-${Date.now()}.txt`
+    try {
+      writeFileSync(tmpFile, prompt + '\n', { mode: 0o600 })
+      execSync(`tmux load-buffer ${tmpFile} && tmux paste-buffer -t ${tmuxWindow} && tmux send-keys -t ${tmuxWindow} '' Enter`, { timeout: 5000 })
+      unlinkSync(tmpFile)
+      process.stderr.write(`slack channel: tmux delivery OK → ${tmuxWindow}\n`)
+    } catch (tmuxErr) {
+      process.stderr.write(`slack channel: tmux delivery failed: ${tmuxErr}\n`)
+      try { unlinkSync(tmpFile) } catch {}
+    }
+  }
 }
 
 // Track message timestamps we already processed to deduplicate.
