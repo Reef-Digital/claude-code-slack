@@ -40,6 +40,8 @@ Version **2.1.80** or later is required (channels support). Check with:
 claude --version
 ```
 
+> **Important:** Channels require a **Claude Pro, Max, Team, or Enterprise subscription** (claude.ai account login). API key authentication (`ANTHROPIC_API_KEY`) alone is not sufficient — the channels feature depends on claude.ai OAuth which is only available with a subscription plan. On headless servers without browser access (e.g. EC2), set `CLAUDE_TMUX_WINDOW` to use the tmux fallback delivery instead.
+
 ### Slack App
 
 You need a Slack app with Socket Mode enabled. Follow the steps below to create one.
