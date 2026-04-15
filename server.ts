@@ -17,6 +17,10 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { App, LogLevel } from '@slack/bolt'
 import type { GenericMessageEvent } from '@slack/types'
+import {
+  resolveUserName as resolveUserNameImpl,
+  type UsersInfoClient,
+} from './user-names.ts'
 import { randomBytes } from 'crypto'
 import { execSync } from 'child_process'
 import {
@@ -70,6 +74,9 @@ const INBOX_DIR = join(STATE_DIR, 'inbox')
 // Track the last inbound message ts per channel for auto-threading.
 // When Claude replies without reply_to, default to the last message received.
 const lastInboundTs = new Map<string, string>()
+
+const resolveUserName = (userId: string) =>
+  resolveUserNameImpl(userId, app.client as unknown as UsersInfoClient)
 
 process.on('unhandledRejection', (err) => {
   process.stderr.write(`slack channel: unhandled rejection: ${err}\n`)
@@ -612,21 +619,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           limit,
         })
         const msgs = (result.messages ?? []).reverse()
-        const out =
-          msgs.length === 0
-            ? '(no messages)'
-            : msgs
-                .map((m) => {
-                  const who =
-                    m.user === botUserId ? 'me' : m.user ?? 'unknown'
-                  const atts =
-                    m.files && m.files.length > 0
-                      ? ` +${m.files.length}att`
-                      : ''
-                  const text = (m.text ?? '').replace(/[\r\n]+/g, ' | ')
-                  return `[${new Date(Number(m.ts) * 1000).toISOString()}] ${who}: ${text}  (id: ${m.ts}${atts})`
-                })
-                .join('\n')
+        const lines: string[] = []
+        for (const m of msgs) {
+          const who =
+            m.user === botUserId
+              ? 'me'
+              : m.user
+                ? await resolveUserName(m.user)
+                : 'unknown'
+          const atts =
+            m.files && m.files.length > 0
+              ? ` +${m.files.length}att`
+              : ''
+          const text = (m.text ?? '').replace(/[\r\n]+/g, ' | ')
+          lines.push(
+            `[${new Date(Number(m.ts) * 1000).toISOString()}] ${who}: ${text}  (id: ${m.ts}${atts})`,
+          )
+        }
+        const out = lines.length === 0 ? '(no messages)' : lines.join('\n')
         return { content: [{ type: 'text', text: out }] }
       }
 
@@ -640,21 +650,24 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           limit,
         })
         const msgs = result.messages ?? []
-        const out =
-          msgs.length === 0
-            ? '(no replies)'
-            : msgs
-                .map((m) => {
-                  const who =
-                    m.user === botUserId ? 'me' : m.user ?? 'unknown'
-                  const atts =
-                    m.files && m.files.length > 0
-                      ? ` +${m.files.length}att`
-                      : ''
-                  const text = (m.text ?? '').replace(/[\r\n]+/g, ' | ')
-                  return `[${new Date(Number(m.ts) * 1000).toISOString()}] ${who}: ${text}  (id: ${m.ts}${atts})`
-                })
-                .join('\n')
+        const lines: string[] = []
+        for (const m of msgs) {
+          const who =
+            m.user === botUserId
+              ? 'me'
+              : m.user
+                ? await resolveUserName(m.user)
+                : 'unknown'
+          const atts =
+            m.files && m.files.length > 0
+              ? ` +${m.files.length}att`
+              : ''
+          const text = (m.text ?? '').replace(/[\r\n]+/g, ' | ')
+          lines.push(
+            `[${new Date(Number(m.ts) * 1000).toISOString()}] ${who}: ${text}  (id: ${m.ts}${atts})`,
+          )
+        }
+        const out = lines.length === 0 ? '(no replies)' : lines.join('\n')
         return { content: [{ type: 'text', text: out }] }
       }
 

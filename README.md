@@ -250,6 +250,8 @@ Once connected, Claude Code gains these Slack tools:
 | `fetch_thread` | Fetch replies in a thread |
 | `download_attachment` | Download files from a message |
 
+`fetch_messages` and `fetch_thread` resolve each message's user ID to a display name (via `users.info`, cached per process) so output reads as `alice: hello` instead of `U08LBFQAKTM: hello`. Requires the `users:read` scope.
+
 ## Approval Flow for Destructive Actions
 
 When Claude Code runs on EC2 (headless, no terminal), it needs human approval for destructive actions like `git commit`, `git push`, deploy, etc. The plugin's tools enable a Slack-based approval protocol:

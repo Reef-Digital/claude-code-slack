@@ -27,6 +27,7 @@ THREAD_TS_FILE="${HOME}/.claude/channels/slack/active-thread-ts"
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 if [ "$TOOL_NAME" = "mcp__slack__reply" ]; then
   REPLY_TO=$(echo "$INPUT" | jq -r '.tool_input.reply_to // empty')
+  REPLY_CHANNEL=$(echo "$INPUT" | jq -r '.tool_input.chat_id // empty')
   if [ -n "$REPLY_TO" ]; then
     # Always update global fallback
     echo "$REPLY_TO" > "$THREAD_TS_FILE"
@@ -35,6 +36,10 @@ if [ "$TOOL_NAME" = "mcp__slack__reply" ]; then
       mkdir -p "$THREAD_MAP_DIR"
       echo "$REPLY_TO" > "$THREAD_MAP_DIR/$SESSION_ID"
     fi
+  fi
+  # Track active channel so permission-relay posts in the right channel
+  if [ -n "$REPLY_CHANNEL" ]; then
+    echo "$REPLY_CHANNEL" > "${HOME}/.claude/channels/slack/active-channel"
   fi
 fi
 
