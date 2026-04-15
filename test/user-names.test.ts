@@ -82,9 +82,32 @@ describe('resolveUserName', () => {
   it('falls back to the user ID on API error and does not cache', async () => {
     const hits = { count: 0 }
     const client = fakeClient({ U_ERR: 'throw' }, hits)
-    expect(await resolveUserName('U_ERR', client)).toBe('U_ERR')
-    await resolveUserName('U_ERR', client)
+    const logs: string[] = []
+    expect(await resolveUserName('U_ERR', client, (m) => logs.push(m))).toBe(
+      'U_ERR',
+    )
+    await resolveUserName('U_ERR', client, (m) => logs.push(m))
     expect(hits.count).toBe(2)
+    expect(logs.length).toBe(2)
+    expect(logs[0]).toContain('U_ERR')
+    expect(logs[0]).toContain('failed')
+  })
+
+  it('surfaces Slack missing_scope error code through the logger', async () => {
+    const client = {
+      users: {
+        info: async () => {
+          const err = new Error('platform error') as Error & {
+            data?: { error?: string }
+          }
+          err.data = { error: 'missing_scope' }
+          throw err
+        },
+      },
+    }
+    const logs: string[] = []
+    await resolveUserName('U1', client, (m) => logs.push(m))
+    expect(logs[0]).toContain('missing_scope')
   })
 
   it('caches per-user — different IDs resolve independently', async () => {

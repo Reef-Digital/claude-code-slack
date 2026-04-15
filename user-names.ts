@@ -26,6 +26,7 @@ export type UsersInfoClient = {
 export async function resolveUserName(
   userId: string,
   client: UsersInfoClient,
+  logger: (msg: string) => void = (m) => process.stderr.write(m + '\n'),
 ): Promise<string> {
   if (userNameCache.has(userId)) return userNameCache.get(userId)!
   try {
@@ -33,7 +34,12 @@ export async function resolveUserName(
     const name = pickUserName(result, userId)
     userNameCache.set(userId, name)
     return name
-  } catch {
+  } catch (err: unknown) {
+    const code =
+      (err as { data?: { error?: string } })?.data?.error ??
+      (err as { message?: string })?.message ??
+      String(err)
+    logger(`resolveUserName(${userId}) failed: ${code}`)
     return userId
   }
 }

@@ -61,7 +61,9 @@ Go to **OAuth & Permissions > Bot Token Scopes** and add:
 
 | Scope | Purpose |
 |-------|---------|
+| `app_mentions:read` | Receive `@bot` mentions in channels |
 | `chat:write` | Send messages |
+| `channels:read` | Look up public channel metadata |
 | `channels:history` | Read public channel history |
 | `groups:history` | Read private channel history |
 | `im:history` | Read DM history |
@@ -69,7 +71,10 @@ Go to **OAuth & Permissions > Bot Token Scopes** and add:
 | `reactions:write` | Add emoji reactions |
 | `files:write` | Upload file attachments |
 | `files:read` | Read file metadata |
-| `users:read` | Resolve user info |
+| `users:read` | Resolve user IDs to display names (`fetch_messages`, `fetch_thread`) |
+| `users.profile:read` | Read `profile.display_name` for name resolution |
+
+> **All scopes are required.** Reinstall the app after adding any of them — the bot token issued at install time is scope-locked. If a scope is missing, the plugin does not crash: it silently falls back (e.g. `fetch_messages` prints raw `U0…` IDs instead of display names). Check plugin stderr for `resolveUserName(…) failed: missing_scope` to diagnose scope gaps.
 
 ### 3. Subscribe to Events
 
