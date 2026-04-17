@@ -127,7 +127,9 @@ Then add to your MCP settings (e.g. `~/.claude/settings.json` or project `.mcp.j
 
 > **Note:** Do not use a `cwd` field in the MCP config — Claude Code ignores it. Use bun's `--cwd` flag in the args array instead.
 
-### 6. Configure Tokens
+### 6. Configure Tokens and Baseline Access
+
+The plugin is configured entirely via environment variables — no JSON files to edit.
 
 Run in Claude Code:
 
@@ -135,7 +137,30 @@ Run in Claude Code:
 /slack:configure
 ```
 
-Paste your tokens when prompted. They are saved to `~/.claude/channels/slack/.env` (chmod 600, owner-only).
+…and paste your Slack tokens when prompted. Or edit `~/.claude/channels/slack/.env` by hand:
+
+```
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_OWNERS=U08LBFQAKTM
+SLACK_CHANNELS=C0AU11F386M,C0ARG49JR7W
+```
+
+The file is chmod 600, owner-only.
+
+| Env var | Required | Default | Behavior |
+|---|---|---|---|
+| `SLACK_BOT_TOKEN` | yes | — | Bot User OAuth Token (`xoxb-...`) from the Slack app's Install page |
+| `SLACK_APP_TOKEN` | yes | — | App-Level Token (`xapp-...`) with `connections:write` scope |
+| `SLACK_OWNERS` | yes | — | Comma-separated Slack user IDs. Owners can always DM the bot and trigger it in any `SLACK_CHANNELS` channel. |
+| `SLACK_CHANNELS` | yes | — | Comma-separated Slack channel IDs. The bot only responds in these channels. |
+| `SLACK_MENTION_REQUIRED` | no | `true` | Set to the literal string `false` to let channel messages trigger the bot without `@bot`. |
+| `SLACK_STATE_DIR` | no | `~/.claude/channels/slack` | Override the state directory |
+| `SLACK_ACCESS_MODE` | no | — | Set to `static` to pin access.json at boot (advanced) |
+
+**Invite the bot to each channel in Slack.** `SLACK_CHANNELS` only controls which channels the plugin responds to — it does not auto-join. In Slack, type `/invite @YourBotName` in each channel listed.
+
+To find a Slack user or channel ID: right-click the name in Slack → **View … details** → scroll to the bottom.
 
 ### 7. Launch Claude Code with the Channel
 
@@ -153,42 +178,33 @@ Listening for channel messages from: server:slack
 
 > `server:slack` refers to the MCP server key in `.mcp.json`. Do not also pass `--channels` — that flag is for official plugins only and will cause duplicate registration warnings.
 
-### 8. Pair Your Slack Account
+### 8. Say Hi
 
-DM the bot in Slack. It will reply with a pairing code:
-
-```
-Pairing required — run in Claude Code:
-/slack:access pair a3f91c
-```
-
-Run that command in your terminal to approve the pairing.
-
-### 9. Invite the Bot to Channels
-
-For the bot to receive messages in a channel, it must be a member:
-
-1. Open the Slack channel
-2. Type `/invite @YourBotName` or mention the bot
-3. Enable the channel in access control:
-
-```
-/slack:access group add C0123456789
-```
-
-To find a channel's ID, right-click the channel name in Slack > **View channel details** > scroll to the bottom.
+With `SLACK_OWNERS` + `SLACK_CHANNELS` set, you can now DM the bot from any owner account, or @mention it in any channel listed in `SLACK_CHANNELS` (after inviting the bot to that channel in Slack). No further setup required.
 
 ## Access Control
 
-The plugin uses a layered access control model:
+The env vars above are the **primary access-control layer**. Owners listed in `SLACK_OWNERS` can DM the bot and trigger it in channels listed in `SLACK_CHANNELS`. That's it.
 
-| Mode | Behavior |
-|------|----------|
-| **Pairing** (default) | Unknown DM senders get a 6-character code to approve in the terminal |
-| **Allowlist** | Only pre-approved Slack user IDs can interact |
-| **Disabled** | All messages dropped |
+### Precedence
 
-### Managing access
+1. **Env** (`SLACK_OWNERS` / `SLACK_CHANNELS`) — the baseline. Set once at deploy time.
+2. **`access.json`** (optional, managed via `/slack:access`) — additive runtime overrides. Used for ad-hoc pairings and per-channel custom policies.
+
+For DMs: a sender is allowed if they appear in **either** `SLACK_OWNERS` or `access.json:allowFrom`.
+
+For channels:
+- If `access.json` has an explicit entry for the channel, that entry wins — its `allowFrom` and `requireMention` are applied exactly as stored.
+- Otherwise, if the channel is in `SLACK_CHANNELS`, the env defaults apply (only `SLACK_OWNERS` members can trigger, `SLACK_MENTION_REQUIRED` controls mention policy).
+- Otherwise, the message is dropped.
+
+## Advanced usage
+
+Everything below is optional. Most deployments need only the env vars above.
+
+### `/slack:access` — runtime overrides
+
+The plugin still ships with the legacy `access.json` state file + `/slack:access` skill for ad-hoc changes that don't warrant an env-var edit:
 
 ```bash
 /slack:access                          # Show current status
@@ -196,17 +212,35 @@ The plugin uses a layered access control model:
 /slack:access allow <userId>           # Add a user directly
 /slack:access remove <userId>          # Remove a user
 /slack:access policy allowlist         # Switch to allowlist-only mode
-/slack:access group add C0123456789    # Enable a channel
+/slack:access group add C0123456789    # Enable a channel (custom policy)
 /slack:access group rm C0123456789     # Disable a channel
 /slack:access set ackReaction eyes     # React to messages on receipt
 ```
 
-### Channel options
+`access.json` is optional — the plugin boots cleanly without it. It's only used when you need per-channel custom policies beyond the env defaults.
 
-When adding a group, you can configure per-channel behavior:
+### Pairing flow (DMs from non-owners)
+
+If a Slack user not in `SLACK_OWNERS` DMs the bot and `dmPolicy` is `pairing` (the default in `access.json`), the bot replies with a 6-character pairing code. The user in the terminal runs `/slack:access pair <code>` to add the sender to `access.json:allowFrom`.
+
+Pairing is only relevant if you want to grant DM access to users who aren't listed in `SLACK_OWNERS`. If every DM-capable user is already an owner, you never hit the pairing flow.
+
+### Per-channel options (`access.json` only)
+
+Custom channel entries in `access.json` support:
 
 - `requireMention` (default: `true`) — only respond when @mentioned. Set to `false` to respond to all messages.
-- `allowFrom` — restrict which user IDs can trigger the bot in that channel.
+- `allowFrom` — restrict which user IDs can trigger the bot in that channel. Empty list = anyone in the channel.
+
+These overrides apply **per channel** and fully replace the env defaults for that channel.
+
+### DM policy modes (`access.json` only)
+
+| Mode | Behavior |
+|------|----------|
+| `pairing` (default) | Unknown DM senders get a pairing code |
+| `allowlist` | Only users in `SLACK_OWNERS` or `access.json:allowFrom` can DM |
+| `disabled` | All messages dropped |
 
 ## Architecture
 
@@ -318,20 +352,13 @@ State lives in `~/.claude/channels/slack/`:
 
 ```
 ~/.claude/channels/slack/
-  .env              # SLACK_BOT_TOKEN + SLACK_APP_TOKEN (chmod 600)
-  access.json       # Access control policy
+  .env              # SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_OWNERS, SLACK_CHANNELS (chmod 600)
+  access.json       # Optional runtime overrides (pairings, per-channel policies)
   approved/         # Pairing approval markers
   inbox/            # Downloaded attachments
 ```
 
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SLACK_BOT_TOKEN` | Yes | Bot User OAuth Token (`xoxb-...`) |
-| `SLACK_APP_TOKEN` | Yes | App-Level Token (`xapp-...`) |
-| `SLACK_STATE_DIR` | No | Override state directory (default: `~/.claude/channels/slack`) |
-| `SLACK_ACCESS_MODE` | No | Set to `static` to pin access.json at boot |
+See **Setup > 6. Configure Tokens and Baseline Access** above for the full env var reference.
 
 ## Troubleshooting
 
@@ -339,8 +366,9 @@ State lives in `~/.claude/channels/slack/`:
 |---------|-----|
 | `bun: command not found` | Install Bun: `curl -fsSL https://bun.sh/install \| bash` |
 | `SLACK_BOT_TOKEN and SLACK_APP_TOKEN required` | Run `/slack:configure` and paste both tokens |
+| Bot ignores DMs from an owner | Confirm the user ID is in `SLACK_OWNERS` (comma-separated, no quotes) and restart the plugin. Check plugin stderr for `slack channel: connected as …` on startup. |
 | Bot connects but no messages arrive | Verify all 5 event subscriptions are added (step 3) and the app was reinstalled after adding them |
-| Bot doesn't respond in a channel | 1) Invite the bot to the channel 2) Add with `/slack:access group add <channelId>` |
+| Bot doesn't respond in a channel | 1) Invite the bot to the channel in Slack 2) Add the channel ID to `SLACK_CHANNELS` in `~/.claude/channels/slack/.env` 3) Verify your user ID is in `SLACK_OWNERS` 4) Restart the plugin |
 | "Listening for channel messages" but nothing happens | Check `--dangerously-load-development-channels server:slack` flag is set |
 | Pairing code expired | DM the bot again to get a fresh code (codes expire after 1 hour) |
 | MCP server crashes silently | Do not use `cwd` in `.mcp.json` — use bun's `--cwd` flag in args instead |

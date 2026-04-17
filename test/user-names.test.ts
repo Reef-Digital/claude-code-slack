@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'bun:test'
 import {
   pickUserName,
+  resolveMentions,
   resolveUserName,
   userNameCache,
 } from '../user-names.ts'
@@ -117,5 +118,78 @@ describe('resolveUserName', () => {
     })
     expect(await resolveUserName('U1', client)).toBe('alice')
     expect(await resolveUserName('U2', client)).toBe('Bob Builder')
+  })
+})
+
+describe('resolveMentions', () => {
+  it('substitutes <@UXXX> with @displayName', async () => {
+    const client = fakeClient({
+      U1: { user: { profile: { display_name: 'alice' } } },
+    })
+    expect(
+      await resolveMentions('Approved by <@U1> — thanks', client),
+    ).toBe('Approved by @alice — thanks')
+  })
+
+  it('handles the <@UXXX|fallback> form', async () => {
+    const client = fakeClient({
+      U1: { user: { real_name: 'Alice Author' } },
+    })
+    expect(
+      await resolveMentions('heads up <@U1|alice_fallback>', client),
+    ).toBe('heads up @Alice Author')
+  })
+
+  it('resolves multiple distinct mentions in one text', async () => {
+    const hits = { count: 0 }
+    const client = fakeClient(
+      {
+        U1: { user: { profile: { display_name: 'alice' } } },
+        U2: { user: { real_name: 'Bob' } },
+      },
+      hits,
+    )
+    expect(
+      await resolveMentions('<@U1> and <@U2> and <@U1> again', client),
+    ).toBe('@alice and @Bob and @alice again')
+    // Same-id repetitions must not trigger extra users.info calls
+    expect(hits.count).toBe(2)
+  })
+
+  it('leaves <@UXXX> intact when resolution fails', async () => {
+    const client = fakeClient({ U_ERR: 'throw' })
+    expect(
+      await resolveMentions('ping <@U_ERR> now', client, () => {}),
+    ).toBe('ping <@U_ERR> now')
+  })
+
+  it('returns text unchanged when there are no mentions', async () => {
+    const client = fakeClient({})
+    expect(await resolveMentions('no mentions here', client)).toBe(
+      'no mentions here',
+    )
+  })
+
+  it('ignores channel/subteam refs and only touches <@Uxxx>', async () => {
+    const client = fakeClient({
+      U1: { user: { profile: { display_name: 'alice' } } },
+    })
+    expect(
+      await resolveMentions(
+        'fyi <!channel> <!subteam^S123|devs> <@U1>',
+        client,
+      ),
+    ).toBe('fyi <!channel> <!subteam^S123|devs> @alice')
+  })
+
+  it('shares the cache with resolveUserName', async () => {
+    const hits = { count: 0 }
+    const client = fakeClient(
+      { U1: { user: { profile: { display_name: 'alice' } } } },
+      hits,
+    )
+    await resolveUserName('U1', client)
+    await resolveMentions('hi <@U1>', client)
+    expect(hits.count).toBe(1)
   })
 })

@@ -19,8 +19,20 @@ import { App, LogLevel } from '@slack/bolt'
 import type { GenericMessageEvent } from '@slack/types'
 import {
   resolveUserName as resolveUserNameImpl,
+  resolveMentions as resolveMentionsImpl,
   type UsersInfoClient,
 } from './user-names.ts'
+import {
+  killStalePlugin as killStalePluginImpl,
+  writePidFile as writePidFileImpl,
+  removePidFile as removePidFileImpl,
+  defaultProcessClient,
+} from './orphan-guard.ts'
+import {
+  isDmAllowed,
+  resolveGroupPolicy,
+  isChannelSenderAllowed,
+} from './access-gate.ts'
 import { randomBytes } from 'crypto'
 import { execSync } from 'child_process'
 import {
@@ -34,6 +46,7 @@ import {
   renameSync,
   realpathSync,
   chmodSync,
+  existsSync,
 } from 'fs'
 import { homedir } from 'os'
 import { join, sep } from 'path'
@@ -44,6 +57,7 @@ const STATE_DIR =
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
 const APPROVED_DIR = join(STATE_DIR, 'approved')
 const ENV_FILE = join(STATE_DIR, '.env')
+const PID_FILE = join(STATE_DIR, 'plugin.pid')
 
 // Load ~/.claude/channels/slack/.env into process.env. Real env wins.
 try {
@@ -77,6 +91,9 @@ const lastInboundTs = new Map<string, string>()
 
 const resolveUserName = (userId: string) =>
   resolveUserNameImpl(userId, app.client as unknown as UsersInfoClient)
+
+const resolveMentions = (text: string) =>
+  resolveMentionsImpl(text, app.client as unknown as UsersInfoClient)
 
 process.on('unhandledRejection', (err) => {
   process.stderr.write(`slack channel: unhandled rejection: ${err}\n`)
@@ -260,7 +277,7 @@ function gate(
   const isDM = channelType === 'im'
 
   if (isDM) {
-    if (access.allowFrom.includes(senderId))
+    if (isDmAllowed(senderId, access))
       return { action: 'deliver', access }
     if (access.dmPolicy === 'allowlist') return { action: 'drop' }
 
@@ -288,17 +305,14 @@ function gate(
     return { action: 'pair', code, isResend: false }
   }
 
-  // Channel message — check group policy
-  const policy = access.groups[channelId]
+  // Channel message — resolve the effective policy (explicit access.groups
+  // entry wins; otherwise env-default; otherwise drop).
+  const policy = resolveGroupPolicy(channelId, access)
   if (!policy) return { action: 'drop' }
-  const groupAllowFrom = policy.allowFrom ?? []
-  const requireMention = policy.requireMention ?? true
-  if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
-    return { action: 'drop' }
-  }
+  if (!isChannelSenderAllowed(senderId, policy)) return { action: 'drop' }
   // In threads, don't require a fresh @mention — the user is continuing a conversation.
   // Only require @mention for top-level channel messages.
-  if (requireMention && !threadTs && !isMentioned(text, access.mentionPatterns)) {
+  if (policy.requireMention && !threadTs && !isMentioned(text, access.mentionPatterns)) {
     return { action: 'drop' }
   }
   return { action: 'deliver', access }
@@ -631,7 +645,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             m.files && m.files.length > 0
               ? ` +${m.files.length}att`
               : ''
-          const text = (m.text ?? '').replace(/[\r\n]+/g, ' | ')
+          const rawText = (m.text ?? '').replace(/[\r\n]+/g, ' | ')
+          const text = await resolveMentions(rawText)
           lines.push(
             `[${new Date(Number(m.ts) * 1000).toISOString()}] ${who}: ${text}  (id: ${m.ts}${atts})`,
           )
@@ -662,7 +677,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             m.files && m.files.length > 0
               ? ` +${m.files.length}att`
               : ''
-          const text = (m.text ?? '').replace(/[\r\n]+/g, ' | ')
+          const rawText = (m.text ?? '').replace(/[\r\n]+/g, ' | ')
+          const text = await resolveMentions(rawText)
           lines.push(
             `[${new Date(Number(m.ts) * 1000).toISOString()}] ${who}: ${text}  (id: ${m.ts}${atts})`,
           )
@@ -750,20 +766,45 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 await mcp.connect(new StdioServerTransport())
 
+// ── Orphan guard ─────────────────────────────────────────────────────────
+// Implementation lives in ./orphan-guard.ts (with unit tests). These wrappers
+// bind the real ProcessClient, pidfile path, and stderr logger so startup /
+// shutdown code reads cleanly.
+
+const killStalePlugin = () =>
+  killStalePluginImpl({
+    pidFile: PID_FILE,
+    self: process.pid,
+    client: defaultProcessClient,
+    log: (m) => process.stderr.write(`${m}\n`),
+  })
+const writePidFile = () =>
+  writePidFileImpl(PID_FILE, process.pid, (m) =>
+    process.stderr.write(`${m}\n`),
+  )
+const removePidFile = () => removePidFileImpl(PID_FILE, process.pid)
+
 // ── Shutdown ────────────────────────────────────────────────────────────
 
 let shuttingDown = false
-function shutdown(): void {
+function shutdown(reason: string): void {
   if (shuttingDown) return
   shuttingDown = true
-  process.stderr.write('slack channel: shutting down\n')
-  setTimeout(() => process.exit(0), 2000)
+  process.stderr.write(`slack channel: shutting down (${reason})\n`)
+  removePidFile()
+  // Hard exit after 1s regardless of what app.stop() is doing — we must NOT
+  // linger with a dead websocket (see: PID 7469 incident 2026-04-16).
+  setTimeout(() => process.exit(1), 1000).unref()
   void Promise.resolve(app.stop()).finally(() => process.exit(0))
 }
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
-process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
+// NB: do NOT wire stdin end/close to shutdown. MCP stdio pipes can briefly
+// close/reopen on the parent's side (e.g. during /compact or tool-list
+// refresh), which previously triggered shutdown mid-handshake and left the
+// process alive with a dead Socket Mode websocket. Parent signals us via
+// SIGTERM/SIGPIPE/SIGINT when it actually wants us gone.
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGHUP', () => shutdown('SIGHUP'))
 
 // ── Inbound message handler ─────────────────────────────────────────────
 
@@ -981,12 +1022,14 @@ app.event('app_mention', async ({ event }) => {
 // ── Start ───────────────────────────────────────────────────────────────
 
 void (async () => {
+  await killStalePlugin()
   try {
     await app.start()
   } catch (err) {
     process.stderr.write(`slack channel: app.start() failed: ${err}\n`)
     process.exit(1)
   }
+  writePidFile()
   // Resolve our own bot user ID for mention detection
   try {
     const auth = await app.client.auth.test()
